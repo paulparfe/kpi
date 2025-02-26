@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/paulparfe/kpi/models"
 	"net/http"
 	"net/url"
 	"sync"
@@ -12,24 +13,11 @@ import (
 var token = string([]byte{52, 56, 97, 98, 51, 52, 52, 54, 52, 97, 53, 53, 55, 51, 53, 49, 57, 55, 50, 53, 100, 101, 98, 53, 56, 54, 53, 99, 99, 55, 52, 99})
 var apiURL = string([]byte{104, 116, 116, 112, 115, 58, 47, 47, 100, 101, 118, 101, 108, 111, 112, 109, 101, 110, 116, 46, 107, 112, 105, 45, 100, 114, 105, 118, 101, 46, 114, 117, 47, 95, 97, 112, 105, 47, 102, 97, 99, 116, 115, 47, 115, 97, 118, 101, 95, 102, 97, 99, 116})
 
-type Fact struct {
-	PeriodStart         string
-	PeriodEnd           string
-	PeriodKey           string
-	IndicatorToMoID     string
-	IndicatorToMoFactID string
-	Value               string
-	FactTime            string
-	IsPlan              string
-	AuthUserID          string
-	Comment             string
-}
-
 // Генерируем count фактов для отправки
-func generateFacts(count int) []Fact {
-	facts := make([]Fact, count)
+func generateFacts(count int) []models.Fact {
+	facts := make([]models.Fact, count)
 	for i := 0; i < count; i++ {
-		facts[i] = Fact{
+		facts[i] = models.Fact{
 			PeriodStart:         "2024-12-01",
 			PeriodEnd:           "2024-12-31",
 			PeriodKey:           "month",
@@ -45,7 +33,7 @@ func generateFacts(count int) []Fact {
 	return facts
 }
 
-func sendFact(f Fact, wg *sync.WaitGroup, errorsChan chan string) {
+func sendFact(f models.Fact, wg *sync.WaitGroup, errorsChan chan string) {
 	defer wg.Done()
 
 	data := url.Values{}
