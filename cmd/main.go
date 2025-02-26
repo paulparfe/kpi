@@ -29,8 +29,8 @@ func generateFacts(count int) []models.Fact {
 }
 
 func main() {
-	maxBatchSize := 2         // Размер пачки
-	facts := generateFacts(7) // Факты для отправки
+	maxBatchSize := 2         // Количество одновременно отправляемых фактов
+	facts := generateFacts(7) // Все факты для отправки
 
 	for i := 0; i < len(facts); i += maxBatchSize {
 		var wg sync.WaitGroup
