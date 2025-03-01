@@ -1,88 +1,129 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/paulparfe/kpi/api"
+	"github.com/paulparfe/kpi/buffer"
 	"github.com/paulparfe/kpi/models"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
-// Генерируем count фактов для отправки
-func generateFacts(count int) []models.Fact {
-	facts := make([]models.Fact, count)
-	for i := 0; i < count; i++ {
-		facts[i] = models.Fact{
-			PeriodStart:         "2024-12-01",
-			PeriodEnd:           "2024-12-31",
-			PeriodKey:           "month",
-			IndicatorToMoID:     "227373",
-			IndicatorToMoFactID: "0",
-			Value:               "1",
-			FactTime:            "2024-12-31",
-			IsPlan:              "0",
-			AuthUserID:          "40",
-			Comment:             fmt.Sprintf("PaulParfe %d", i+1),
-		}
-	}
-	return facts
-}
-
 func main() {
+	// Создаем контекст с возможностью отмены для graceful shutdown (мягкого завершения работы)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Горутина для обработки системных сигналов завершения (Ctrl+C, SIGTERM)
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		<-sigChan
+		fmt.Println("Завершаем работу...")
+		cancel()
+	}()
+
+	// Генерируем фиксированное количество фактов для отправки.
+	facts := models.GenerateFacts(10)
+
+	// Добавляем сгенерированные факты в буфер.
+	buff := buffer.NewBuffer()
+	for _, fact := range facts {
+		buff.Add(fact)
+	}
+
 	// Количество одновременно отправляемых фактов.
-	// Возможно лучше будет сделать несколько одновременно работающих "отправлятелей" фактов.
-	maxBatchSize := 2
+	maxBatchSize := 3
 
-	// Сейчас генерируется фиксированное количество фактов для отправки.
-	// В реальности нужна функция для добавления фактов в буфер.
-	// В реальности нужна валидация принятых данных.
-	facts := generateFacts(7) // Все факты для отправки
+	// Цикл отправки фактов пачками.
+mainLoop:
+	for {
+		select {
+		case <-ctx.Done(): // Если контекст завершен (например, получен SIGTERM)
+			fmt.Println("Выход из цикла обработки")
+			break mainLoop
+		default:
+		}
 
-	// Цикл заполнения батча, отправки, проверки результатов отправки.
-	// Должен быть бесконечный цикл, с возможностью выхода по graceful shutdown.
-	for i := 0; i < len(facts); i += maxBatchSize {
+		// Если буфер пуст, делаем паузу и продолжаем цикл.
+		if buff.IsNothingToProcess() {
+			time.Sleep(time.Second)
+			continue
+		}
 
-		// Для ожидания завершения отправки всех фактов из пачки.
+		// Создаем WaitGroup для ожидания завершения отправки всех фактов из текущей пачки.
 		var wg sync.WaitGroup
 
-		// Для приёма сообщений об ошибках из каждого отправленного факта.
-		errorsChan := make(chan string, maxBatchSize)
-
-		// Возможно в буфере остался 1 факт, а размер пачки = 2.
-		// Тогда нужно в пачку положить этот 1 факт.
-		end := i + maxBatchSize
-		if end > len(facts) {
-			end = len(facts)
-		}
-
-		// Считывать из буфера факты по-одному.
-		// В отдельных горутинах отправлять факт за фактом параллельно.
-		for _, fact := range facts[i:end] {
-			// Увеличим счётчик отправляемых фактов на 1.
+		// Запускаем несколько горутин для отправки фактов.
+		for i := 0; i < maxBatchSize; i++ {
 			wg.Add(1)
 
-			// Отправляем факт.
-			// После завершения функции произойдет уменьшение на 1 счётчика отправляемых фактов.
-			go api.SendFact(fact, &wg, errorsChan)
+			// В отдельных горутинах отправляем факт за фактом параллельно.
+			go worker(ctx, &wg, buff)
 		}
 
 		// Ожидаем когда отправка всех фактов из пачки завершится с ошибками или без.
-		// Счётчик отправляемых фактов будет равен 0.
 		wg.Wait()
 
-		// Закроем канал сообщений об ошибках.
-		close(errorsChan)
-
-		// Если произошла ошибка, то выводим её в логи.
-		// Факты с ошибками, возможно нужно оставить в буфере и попытаться отправить позже.
-		for err := range errorsChan {
-			fmt.Println("Ошибка в пачке:", err)
-		}
-
-		// Если не было ошибки, то факты нужно удалить из буфера.
-
-		// Пауза чтобы пачки отличались по времени ("post_time": "26.02.2025 08:09:21",)
+		// Пауза для тестового задания чтобы пачки отличались по времени ("post_time": "26.02.2025 08:09:21",)
 		time.Sleep(2 * time.Second)
 	}
 
+	// Перед завершением программы сохраняем буфер в файл.
+	saveBufferToFile(buff)
+}
+
+// Worker обрабатывает отправку одного факта из буфера
+func worker(ctx context.Context, wg *sync.WaitGroup, buff *buffer.Buffer) {
+	defer wg.Done() // Уменьшаем счетчик горутин при завершении работы.
+
+	select {
+	case <-ctx.Done(): // Если контекст завершен, выходим
+		fmt.Println("Worker завершает работу (прервано)")
+		return
+	default:
+	}
+
+	// Извлекаем факт для отправки.
+	fact := buff.GetFactForProcessing()
+	if fact == nil {
+		return // Если фактов нет, выходим.
+	}
+
+	// Пытаемся отправить факт через API.
+	sentFact, err := api.SendFact(ctx, fact)
+	if err != nil {
+		// В случае ошибки меняем статус факта на "failed" (чтобы отправить повторно).
+		buff.UpdateStatus(sentFact, buffer.StatusFailed)
+		fmt.Println("Ошибка отправки:", err)
+		return
+	}
+
+	// Если отправка успешна, удаляем факт из буфера.
+	fmt.Printf("Успешно отправлен %v\n", sentFact.Comment)
+	buff.Remove(sentFact)
+}
+
+// saveBufferToFile сохраняет оставшиеся факты в файл для возможности продолжить отправку и анализа.
+func saveBufferToFile(buff *buffer.Buffer) {
+	// Преобразуем буфер в JSON-формат.
+	data, err := json.MarshalIndent(buff.GetAllFacts(), "", "  ")
+	if err != nil {
+		fmt.Println("Ошибка сериализации буфера:", err)
+		return
+	}
+
+	// Записываем данные в файл buffer_backup.json.
+	err = os.WriteFile("buffer_backup.json", data, 0644)
+	if err != nil {
+		fmt.Println("Ошибка сохранения буфера в файл:", err)
+		return
+	}
+
+	fmt.Println("Буфер успешно сохранен в buffer_backup.json")
 }

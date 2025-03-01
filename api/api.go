@@ -2,40 +2,40 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
-	"github.com/paulparfe/kpi/models"
+	"github.com/paulparfe/kpi/buffer"
 	"net/http"
 	"net/url"
-	"sync"
+	"time"
 )
 
 var Token = string([]byte{52, 56, 97, 98, 51, 52, 52, 54, 52, 97, 53, 53, 55, 51, 53, 49, 57, 55, 50, 53, 100, 101, 98, 53, 56, 54, 53, 99, 99, 55, 52, 99})
 var URL = string([]byte{104, 116, 116, 112, 115, 58, 47, 47, 100, 101, 118, 101, 108, 111, 112, 109, 101, 110, 116, 46, 107, 112, 105, 45, 100, 114, 105, 118, 101, 46, 114, 117, 47, 95, 97, 112, 105, 47, 102, 97, 99, 116, 115, 47, 115, 97, 118, 101, 95, 102, 97, 99, 116})
 
-func SendFact(f models.Fact, wg *sync.WaitGroup, errorsChan chan string) {
-
-	// После завершения функции произойдет уменьшение на 1 счётчика отправляемых фактов.
-	defer wg.Done()
+func SendFact(ctx context.Context, fact *buffer.Fact) (*buffer.Fact, error) {
+	// Устанавливаем таймаут 10 секунд для запроса
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
 	// Подготовка данных к отправке.
 	data := url.Values{}
-	data.Set("period_start", f.PeriodStart)
-	data.Set("period_end", f.PeriodEnd)
-	data.Set("period_key", f.PeriodKey)
-	data.Set("indicator_to_mo_id", f.IndicatorToMoID)
-	data.Set("indicator_to_mo_fact_id", f.IndicatorToMoFactID)
-	data.Set("value", f.Value)
-	data.Set("fact_time", f.FactTime)
-	data.Set("is_plan", f.IsPlan)
-	data.Set("auth_user_id", f.AuthUserID)
-	data.Set("comment", f.Comment)
+	data.Set("period_start", fact.PeriodStart)
+	data.Set("period_end", fact.PeriodEnd)
+	data.Set("period_key", fact.PeriodKey)
+	data.Set("indicator_to_mo_id", fact.IndicatorToMoID)
+	data.Set("indicator_to_mo_fact_id", fact.IndicatorToMoFactID)
+	data.Set("value", fact.Value)
+	data.Set("fact_time", fact.FactTime)
+	data.Set("is_plan", fact.IsPlan)
+	data.Set("auth_user_id", fact.AuthUserID)
+	data.Set("comment", fact.Comment)
 
 	// Формирование API-запроса.
-	// TODO: сделать таймаут через NewRequestWithContext.
-	req, err := http.NewRequest("POST", URL, bytes.NewBufferString(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", URL, bytes.NewBufferString(data.Encode()))
 	if err != nil {
-		errorsChan <- fmt.Sprintf("Ошибка при создании запроса: %v", err)
-		return
+		return fact, fmt.Errorf("ошибка при создании запроса: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+Token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -44,20 +44,22 @@ func SendFact(f models.Fact, wg *sync.WaitGroup, errorsChan chan string) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 
+	// Проверяем, не истек ли таймаут.
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fact, fmt.Errorf("превышено время ожидания отправки факта %v", fact.ID)
+	}
+
 	// Обработка ошибки.
 	if err != nil {
-		errorsChan <- fmt.Sprintf("Ошибка при отправке запроса: %v", err)
-		return
+		return fact, fmt.Errorf("ошибка при отправке запроса: %v", err)
 	}
 	defer resp.Body.Close()
 
 	// Если ответ был не 200.
 	if resp.StatusCode != http.StatusOK {
-		errorsChan <- fmt.Sprintf("Ошибка: %d %v", resp.StatusCode, resp.Status)
-		return
+		return fact, fmt.Errorf("ошибка: %d %v", resp.StatusCode, resp.Status)
 	}
 
 	// Факт успешно отправлен.
-	// В README.md есть пункт про необходимую валидацию принятых данных.
-	fmt.Println("Успешно отправлено:", f.Comment)
+	return fact, nil
 }
