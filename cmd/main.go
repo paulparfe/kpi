@@ -15,18 +15,9 @@ import (
 )
 
 func main() {
-	// Создаем контекст с возможностью отмены для graceful shutdown (мягкого завершения работы)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Горутина для обработки системных сигналов завершения (Ctrl+C, SIGTERM)
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		<-sigChan
-		fmt.Println("Завершаем работу...")
-		cancel()
-	}()
+	// Создаем контекст, который автоматически завершится при получении SIGTERM/SIGINT.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Генерируем фиксированное количество фактов для отправки.
 	facts := models.GenerateFacts(10)
