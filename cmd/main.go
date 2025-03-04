@@ -19,17 +19,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Генерируем фиксированное количество фактов для отправки.
-	facts := models.GenerateFacts(10)
+	// Канал фактов для отправки.
+	facts := models.StreamFacts(ctx)
 
 	// Добавляем сгенерированные факты в буфер.
 	buff := buffer.NewBuffer()
-	for _, fact := range facts {
+	for fact := range facts {
 		buff.Add(fact)
 	}
 
 	// Количество одновременно отправляемых фактов.
-	maxBatchSize := 3
+	maxBatchSize := 2
 
 	// Цикл отправки фактов пачками.
 mainLoop:
