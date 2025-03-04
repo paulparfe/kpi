@@ -1,2 +1,3 @@
 *.http
 .idea
+buffer_backup*
